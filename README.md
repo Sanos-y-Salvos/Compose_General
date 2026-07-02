@@ -1,2 +1,2 @@
-# Compose_General
-Docker compose que sube todo el proyecto
+# README General
+README del proyecto general
