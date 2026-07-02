@@ -1,0 +1,447 @@
+version: '3.8'
+
+services:
+  # ── INFRAESTRUCTURA Y BASES DE DATOS ──
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: rabbitmq
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:5672:5672'
+      - '127.0.0.1:15672:15672'
+    networks:
+      - sanos-y-salvos-net
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cache
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6379:6379'
+    networks:
+      - sanos-y-salvos-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  db-ms-auth:
+    container_name: ms-auth-db
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ms_auth
+    volumes:
+      - auth_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ms_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ms_auth_net
+
+  postgres-localizacion:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: postgres-localizacion
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ms_localizacion
+    ports:
+      - '127.0.0.1:5434:5432'
+    volumes:
+      - pg_localizacion_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - db-localizacion-net
+
+  postgres-matching:
+    image: postgres:15-alpine
+    container_name: postgres-matching
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ms_matching
+    ports:
+      - '127.0.0.1:5435:5432'
+    volumes:
+      - pg_matching_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sanos-y-salvos-net
+
+  postgres-mensajeria:
+    image: postgres:16-alpine
+    container_name: postgres-mensajeria
+    environment:
+      POSTGRES_USER: mensajeria_user
+      POSTGRES_PASSWORD: mensajeria_pass
+      POSTGRES_DB: mensajeria_db
+    ports:
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - postgres_mensajeria_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mensajeria_user -d mensajeria_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sanos-y-salvos-net
+
+  db-ms-soporte:
+    container_name: ms-soporte-db
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-ms_soporte}
+    volumes:
+      - soporte_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-ms_soporte}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ms_soporte_net
+
+  db-ms-users:
+    container_name: ms-users-db
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ms_users
+    volumes:
+      - users_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ms_users"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ms_users_net
+
+  postgres-mascotas:
+    image: postgres:15-alpine
+    container_name: postgres-mascotas
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ms_mascotas
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pg_mascotas_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - db-mascotas-net
+
+  # ── MICROSERVICIOS ──
+  ms-auth:
+    container_name: ms-auth
+    image: lucianobc/ms-auth:latest
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: db-ms-auth
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ms_auth
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672 
+      REDIS_CACHE_URL: redis://redis:6379 
+      JWT_SECRET: 6dcc110adf4dcde1015a418452ec8ca39780835ef83d28b13b165799a0525f264594d585080db90d09b8b9d4661507e40d67d5d2ae7673fb0b92719a18233213
+      INTERNAL_API_KEY: fe7db533c3030b5da6e544f4c631f92cbcdf0f0d452962e3cbfe08ca5a8c116e
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      db-ms-auth:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ms_auth_net
+      - sanos-y-salvos-net
+    restart: unless-stopped
+
+  ms-localizacion:
+    image: lucianobc/ms-localizacion:latest
+    container_name: ms-localizacion
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:3004:3004'
+    environment:
+      DB_HOST: postgres-localizacion
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ms_localizacion
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      RABBITMQ_EXCHANGE: sanos_y_salvos_events
+      CORS_ORIGIN: '*'
+    depends_on:
+      postgres-localizacion:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - db-localizacion-net
+      - sanos-y-salvos-net
+
+  ms-matching:
+    image: lucianobc/ms-match:latest
+    container_name: ms-matching
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:3007:3005'
+    environment:
+      PORT: 3005
+      DB_HOST: postgres-matching
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ms_matching
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      RABBITMQ_EXCHANGE: sanos_y_salvos_events
+      UMBRAL_SCORE: 0.60
+      CORS_ORIGIN: '*'
+    depends_on:
+      postgres-matching:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sanos-y-salvos-net
+
+  ms-mensajeria-privada:
+    image: lucianobc/ms-mensajeria:latest
+    container_name: ms-mensajeria-privada
+    ports:
+      - "127.0.0.1:3006:3006"
+    environment:
+      PORT: 3006
+      DB_HOST: postgres-mensajeria
+      DB_PORT: 5432
+      DB_USER: mensajeria_user
+      DB_PASSWORD: mensajeria_pass
+      DB_NAME: mensajeria_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      RABBITMQ_EXCHANGE: sanos_y_salvos_events
+      JWT_SECRET: 6dcc110adf4dcde1015a418452ec8ca39780835ef83d28b13b165799a0525f264594d585080db90d09b8b9d4661507e40d67d5d2ae7673fb0b92719a18233213
+      CORS_ORIGIN: '*'
+    volumes:
+      - mensajeria_uploads:/app/uploads
+    depends_on:
+      postgres-mensajeria:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sanos-y-salvos-net
+    restart: unless-stopped
+
+  ms-soporte:
+    container_name: ms-soporte
+    image: lucianobc/ms-soporte:latest
+    ports:
+      - "127.0.0.1:3005:3005"
+    environment:
+      NODE_ENV: production
+      PORT: 3005
+      DB_HOST: db-ms-soporte
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-ms_soporte}
+      JWT_SECRET: ${JWT_SECRET:-6dcc110adf4dcde1015a418452ec8ca39780835ef83d28b13b165799a0525f264594d585080db90d09b8b9d4661507e40d67d5d2ae7673fb0b92719a18233213}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      TYPEORM_SYNCHRONIZE: "true"
+      MS_AUTH_URL: http://ms-auth:3001
+      RESEND_API_KEY: ${RESEND_API_KEY:-re_f2GgvLj6_FbLp8cy2Bi4CYT5FkMCd6CbV}
+    depends_on:
+      db-ms-soporte:
+        condition: service_healthy
+      ms-auth:
+        condition: service_started
+    networks:
+      - ms_soporte_net
+      - sanos-y-salvos-net
+    restart: unless-stopped
+
+  ms-users:
+    container_name: ms-users
+    image: lucianobc/ms-users:latest
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      DB_HOST: db-ms-users
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: ms_users
+      JWT_SECRET: 6dcc110adf4dcde1015a418452ec8ca39780835ef83d28b13b165799a0525f264594d585080db90d09b8b9d4661507e40d67d5d2ae7673fb0b92719a18233213
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      AUTH_URL: http://ms-auth:3001
+      INTERNAL_API_KEY: fe7db533c3030b5da6e544f4c631f92cbcdf0f0d452962e3cbfe08ca5a8c116e
+      CLOUDINARY_CLOUD_NAME: dx83p4455
+      CLOUDINARY_API_KEY: 862891856153891
+      CLOUDINARY_API_SECRET: si3Ik1sHAE63QrUhwipeArQUiq0
+      GMAIL_USER: felandresr@gmail.com
+      GMAIL_APP_PASSWORD: polabayuyxzzbyyc
+    ports:
+      - "127.0.0.1:3002:3002"
+    depends_on:
+      db-ms-users:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ms-auth:
+        condition: service_started
+    networks:
+      - ms_users_net
+      - sanos-y-salvos-net
+    restart: unless-stopped
+
+  ms-mascotas:
+    image: lucianobc/ms-mascotas:latest
+    container_name: ms-mascotas
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:3003:3003'
+    environment:
+      PORT: 3003
+      NODE_ENV: development
+      DB_HOST: postgres-mascotas
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_DATABASE: ms_mascotas
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672 
+      RABBITMQ_EXCHANGE: sanos_y_salvos_events
+      JWT_SECRET: 6dcc110adf4dcde1015a418452ec8ca39780835ef83d28b13b165799a0525f264594d585080db90d09b8b9d4661507e40d67d5d2ae7673fb0b92719a18233213
+      UPLOAD_DIR: uploads
+      MAX_FILE_SIZE_MB: 5
+    volumes:
+      - mascotas_uploads_data:/app/uploads
+    depends_on:
+      postgres-mascotas:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - db-mascotas-net
+      - sanos-y-salvos-net
+
+  # ── API GATEWAY Y BFF ──
+  backforfrontend:
+    image: lucianobc/bff:latest
+    container_name: backforfrontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - PORT=3000
+      - AUTH_URL=http://ms-auth:3001/api
+      - USERS_URL=http://ms-users:3002/api
+      - REPORTS_URL=http://ms-mascotas:3003
+      - MASCOTAS_URL=http://ms-mascotas:3003
+      - LOCALIZACION_URL=http://ms-localizacion:3004
+      - SOPORTE_URL=http://ms-soporte:3005/api
+      - MATCHING_URL=http://ms-matching:3005
+    depends_on:
+      - ms-auth
+      - ms-users
+      - ms-mascotas
+      - ms-localizacion
+      - ms-soporte
+      - ms-matching
+    networks:
+      - sanos-y-salvos-net
+
+  api-gateway:
+    image: lucianobc/api-gateway:latest
+    container_name: api-gateway
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8000:8080'
+      - '127.0.0.1:9876:9876'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backforfrontend:
+        condition: service_started
+    networks:
+      - sanos-y-salvos-net
+
+  # ── FRONTEND ──
+  frontend:
+    container_name: frontend
+    image: lucianobc/front_sanos_salvos:latest
+    ports:
+      - "127.0.0.1:80:80"
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    networks:
+      - sanos-y-salvos-net
+
+# ── VOLÚMENES Y REDES ──
+volumes:
+  auth_db_data:
+  pg_localizacion_data:
+  pg_matching_data:
+  postgres_mensajeria_data:
+  mensajeria_uploads:
+  soporte_db_data:
+  users_db_data:
+  pg_mascotas_data:
+  mascotas_uploads_data:
+
+networks:
+  sanos-y-salvos-net:
+    driver: bridge
+    name: mascotas_sanos-y-salvos-net
+  ms_auth_net:
+    driver: bridge
+    name: ms_auth_net
+  db-localizacion-net:
+    driver: bridge 
+    name: db-localizacion-net
+  ms_soporte_net:
+    driver: bridge
+    name: ms_soporte_net
+  ms_users_net:
+    driver: bridge
+    name: ms_users_net
+  db-mascotas-net:
+    driver: bridge
+    name: db-mascotas-net
